@@ -235,6 +235,7 @@ function AuctionStats:CreateSummaryWindow()
         tile     = true, tileSize = 32, edgeSize = 32,
         insets   = { left=8, right=8, top=8, bottom=8 },
     }
+    f:SetBackdropColor(0, 0, 0, 1)    -- чёрный фон, полностью непрозрачный
     f.title = f:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
     f.title:SetPoint("TOP",0,-8); f.title:SetText("AuctionStats: Summary")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
@@ -398,6 +399,8 @@ end
 function AuctionStats:CreateDetailWindow()
     if self.detailFrame then return end
     local f = CreateFrame("Frame","AuctionStatsDetailFrame",UIParent,"BackdropTemplate")
+    f:SetFrameStrata("HIGH")
+    f:SetFrameLevel((AuctionStats.summaryFrame and AuctionStats.summaryFrame:GetFrameLevel() or 0) + 1)
     f:SetSize(W,H); f:SetPoint("CENTER",30,0); f:EnableMouse(true); f:SetMovable(true)
     f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing)
     f:SetBackdrop{
@@ -406,6 +409,7 @@ function AuctionStats:CreateDetailWindow()
         tile     = true, tileSize = 32, edgeSize = 32,
         insets   = { left=8, right=8, top=8, bottom=8 },
     }
+    f:SetBackdropColor(0, 0, 0, 1)    -- чёрный фон, полностью непрозрачный
     f.title = f:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
     f.title:SetPoint("TOP",0,-8); f.title:SetText("Details")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
@@ -581,6 +585,7 @@ end
 -- 9) ShowDetail
 function AuctionStats:ShowDetail(group)
     self:CreateDetailWindow()
+    self.detailFrame:Raise()                              -- <— поднимаем над всеми
     self.detailFrame.title:SetText(format("Details: %s [%d]",group.name,group.itemID))
     self.detailData = {}
     for _,a in ipairs(group.rawGroup) do tinsert(self.detailData,a) end

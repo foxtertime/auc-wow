@@ -1,12 +1,13 @@
--- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями
+-- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями, столбцами Type/Subtype и обработкой почты
 
 -- В AuctionStats.toc:
 -- ## SavedVariables: AuctionStatsDB
 
 AuctionStatsDB = AuctionStatsDB or {
-    storedAuctions = {},
-    history        = {},    -- [itemID] = { { time=..., quantity=..., rawBuyout=..., buyout=..., durationCode=..., operation=... }, ... }
-    lastSyncTime   = nil,
+    storedAuctions  = {},
+    history         = {},    -- [itemID] = { { time=..., quantity=..., rawBuyout=..., buyout=..., durationCode=..., operation=... }, ... }
+    lastSyncTime    = nil,
+    processedMails  = {},    -- ключи уже обработанных писем
 }
 
 local tinsert  = table.insert
@@ -20,19 +21,19 @@ local AuctionStats = {
     lastSyncTime     = AuctionStatsDB.lastSyncTime,
 
     -- summary UI
-    summaryFrame       = nil,
-    summarySearch      = nil,
-    summaryActiveLabel = nil,
-    summaryActiveHdr   = nil,
-    summaryActiveScroll= nil,
-    summaryActiveContent={},
-    summaryActiveLines = {},
-    summaryInactiveLabel = nil,
-    summaryInactiveHdr   = nil,
-    summaryInactiveScroll= nil,
-    summaryInactiveContent={},
-    summaryInactiveLines = {},
-    summaryStats       = nil,
+    summaryFrame         = nil,
+    summarySearch        = nil,
+    summaryActiveLabel   = nil,
+    summaryActiveHdr     = nil,
+    summaryActiveScroll  = nil,
+    summaryActiveContent = nil,
+    summaryActiveLines   = {},
+    summaryInactiveLabel   = nil,
+    summaryInactiveHdr     = nil,
+    summaryInactiveScroll  = nil,
+    summaryInactiveContent = nil,
+    summaryInactiveLines   = {},
+    summaryStats         = nil,
 
     -- detail UI
     detailFrame      = nil,
@@ -53,10 +54,13 @@ local ICON_SIZE    = 14
 -- позиции колонок Summary
 local POS_NUM, POS_ID, POS_ICON, POS_NAME = 0, 40, 100, 140
 local NAME_W                              = 400
-local POS_QTY   = POS_NAME + NAME_W + 10
-local POS_MIN   = POS_QTY  + 60
-local POS_MAX   = POS_MIN  + 120
-local POS_TOTAL = POS_MAX  + 120
+local POS_TYPE    = POS_NAME + NAME_W + 10
+local TYPE_W      = 100
+local POS_SUBTYPE = POS_TYPE + TYPE_W + 10
+local POS_QTY     = POS_SUBTYPE + TYPE_W + 10
+local POS_MIN     = POS_QTY  + 60
+local POS_MAX     = POS_MIN  + 120
+local POS_TOTAL   = POS_MAX  + 120
 
 -- позиции колонок Detail
 local D_POS_NUM, D_POS_ID, D_POS_ICON, D_POS_NAME = 0,40,100,140
@@ -132,7 +136,7 @@ hooksecurefunc(C_AuctionHouse, "PostItem", function(itemLocation, duration, quan
     AuctionStats:RecordHistory(key, quantity or 0, buyoutAmount or 0, duration, "выставление на продажу")
 end)
 
--- 3) Кэш лотов (сохранение LastSyncTime)
+-- 3) Кэш лотов (сохранение LastSyncTime + Type/Subtype)
 function AuctionStats:CacheAuctions()
     print("AuctionStats Debug: CacheAuctions start")
     local rawAPI = C_AuctionHouse.GetOwnedAuctions()
@@ -144,22 +148,24 @@ function AuctionStats:CacheAuctions()
         local id       = key.itemID or 0
         local lvl      = key.itemLevel or 0
         local link     = info.itemLink or ("item:"..id)
-        local name,_,q,_,_,_,_,_,_,tex = GetItemInfo(link)
+        local name,_,q,_,_,itemType,itemSubType,_,_,tex = GetItemInfo(link)
         if not name then GetItemInfo(link) end
         tinsert(self.dbAuctions, {
-            itemID    = id,
-            itemLevel = lvl,
-            icon      = tex or "",
-            name      = name or ("Item#"..id),
-            link      = link,
-            quality   = q or 1,
-            quantity  = info.quantity or 0,
-            timeLeft  = info.timeLeftSeconds and SecsToShort(info.timeLeftSeconds)
-                       or TimeBands[info.timeLeft or info.duration] or "?",
-            rawBuyout = info.buyoutAmount or 0,
-            buyout    = (info.buyoutAmount or 0)>0 and FormatMoney(info.buyoutAmount) or "-",
-            rawBid    = info.bidAmount or 0,
-            bid       = (info.bidAmount or 0)>0 and FormatMoney(info.bidAmount) or "-",
+            itemID      = id,
+            itemLevel   = lvl,
+            icon        = tex or "",
+            name        = name or ("Item#"..id),
+            itemType    = itemType or "",
+            itemSubType = itemSubType or "",
+            link        = link,
+            quality     = q or 1,
+            quantity    = info.quantity or 0,
+            timeLeft    = info.timeLeftSeconds and SecsToShort(info.timeLeftSeconds)
+                          or TimeBands[info.timeLeft or info.duration] or "?",
+            rawBuyout   = info.buyoutAmount or 0,
+            buyout      = (info.buyoutAmount or 0)>0 and FormatMoney(info.buyoutAmount) or "-",
+            rawBid      = info.bidAmount or 0,
+            bid         = (info.bidAmount or 0)>0 and FormatMoney(info.bidAmount) or "-",
         })
     end
 
@@ -171,23 +177,25 @@ function AuctionStats:CacheAuctions()
     print(format("AuctionStats Debug: CacheAuctions end — %d lots, %s", #self.dbAuctions, self.lastSyncTime))
 end
 
--- 4) Группировка по ID + включение history‑only групп
+-- 4) Группировка по ID + включение history‑only групп + Type/Subtype
 function AuctionStats:GroupAuctions()
     local groups = {}
     for _,a in ipairs(self.dbAuctions) do
         local id = a.itemID
         if not groups[id] then
             groups[id] = {
-                itemID    = id,
-                icon      = a.icon,
-                name      = a.name,
-                link      = a.link,
-                quality   = a.quality,
-                count     = 0,
-                min_price = nil,
-                max_price = nil,
-                total     = 0,
-                rawGroup  = {},
+                itemID      = id,
+                icon        = a.icon,
+                name        = a.name,
+                itemType    = a.itemType,
+                itemSubType = a.itemSubType,
+                link        = a.link,
+                quality     = a.quality,
+                count       = 0,
+                min_price   = nil,
+                max_price   = nil,
+                total       = 0,
+                rawGroup    = {},
             }
         end
         local g = groups[id]
@@ -201,18 +209,20 @@ function AuctionStats:GroupAuctions()
     -- добавить группы, у которых только история
     for id,_ in pairs(AuctionStatsDB.history) do
         if not groups[id] then
-            local name,link,q,_,_,_,_,_,_,tex = GetItemInfo("item:"..id)
+            local name,_,q,_,_,itemType,itemSubType,_,_,tex = GetItemInfo("item:"..id)
             groups[id] = {
-                itemID    = id,
-                icon      = tex or "",
-                name      = name or ("Item#"..id),
-                link      = link or ("item:"..id),
-                quality   = q or 1,
-                count     = 0,
-                min_price = nil,
-                max_price = nil,
-                total     = 0,
-                rawGroup  = {},
+                itemID      = id,
+                icon        = tex or "",
+                name        = name or ("Item#"..id),
+                itemType    = itemType or "",
+                itemSubType = itemSubType or "",
+                link        = "item:"..id,
+                quality     = q or 1,
+                count       = 0,
+                min_price   = nil,
+                max_price   = nil,
+                total       = 0,
+                rawGroup    = {},
             }
         end
     end
@@ -226,6 +236,7 @@ end
 -- 5) Создание окна Summary
 function AuctionStats:CreateSummaryWindow()
     if self.summaryFrame then return end
+
     local f = CreateFrame("Frame","AuctionStatsSummaryFrame",UIParent,"BackdropTemplate")
     f:SetSize(W,H); f:SetPoint("CENTER"); f:EnableMouse(true); f:SetMovable(true)
     f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing)
@@ -235,7 +246,7 @@ function AuctionStats:CreateSummaryWindow()
         tile     = true, tileSize = 32, edgeSize = 32,
         insets   = { left=8, right=8, top=8, bottom=8 },
     }
-    f:SetBackdropColor(0, 0, 0, 1)    -- чёрный фон, полностью непрозрачный
+    f:SetBackdropColor(0, 0, 0, 1)
     f.title = f:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
     f.title:SetPoint("TOP",0,-8); f.title:SetText("AuctionStats: Summary")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
@@ -257,14 +268,16 @@ function AuctionStats:CreateSummaryWindow()
     local ah = CreateFrame("Frame",nil,f)
     ah:SetSize(W-60,HDR_H); ah:SetPoint("TOPLEFT",al,"BOTTOMLEFT",0,-2)
     for _,c in ipairs({
-        {x=POS_NUM,  t="#"},
-        {x=POS_ID,   t="ID"},
-        {x=POS_ICON, t="", w=ICON_SIZE},
-        {x=POS_NAME, t="Name", w=NAME_W},
-        {x=POS_QTY,  t="Count"},
-        {x=POS_MIN,  t="Min"},
-        {x=POS_MAX,  t="Max"},
-        {x=POS_TOTAL,t="Total"},
+        {x=POS_NUM,     t="#"},
+        {x=POS_ID,      t="ID"},
+        {x=POS_ICON,    t="", w=ICON_SIZE},
+        {x=POS_NAME,    t="Name", w=NAME_W},
+        {x=POS_TYPE,    t="Type",   w=TYPE_W},
+        {x=POS_SUBTYPE, t="Subtype",w=TYPE_W},
+        {x=POS_QTY,     t="Count"},
+        {x=POS_MIN,     t="Min"},
+        {x=POS_MAX,     t="Max"},
+        {x=POS_TOTAL,   t="Total"},
     }) do
         local fs = ah:CreateFontString(nil,"OVERLAY","GameFontHighlight")
         fs:SetPoint("LEFT",ah,"LEFT",c.x,0); fs:SetText(c.t)
@@ -287,14 +300,16 @@ function AuctionStats:CreateSummaryWindow()
     local ih = CreateFrame("Frame",nil,f)
     ih:SetSize(W-60,HDR_H); ih:SetPoint("TOPLEFT",il,"BOTTOMLEFT",0,-2)
     for _,c in ipairs({
-        {x=POS_NUM,  t="#"},
-        {x=POS_ID,   t="ID"},
-        {x=POS_ICON, t="", w=ICON_SIZE},
-        {x=POS_NAME, t="Name", w=NAME_W},
-        {x=POS_QTY,  t="Count"},
-        {x=POS_MIN,  t="Min"},
-        {x=POS_MAX,  t="Max"},
-        {x=POS_TOTAL,t="Total"},
+        {x=POS_NUM,     t="#"},
+        {x=POS_ID,      t="ID"},
+        {x=POS_ICON,    t="", w=ICON_SIZE},
+        {x=POS_NAME,    t="Name", w=NAME_W},
+        {x=POS_TYPE,    t="Type",   w=TYPE_W},
+        {x=POS_SUBTYPE, t="Subtype",w=TYPE_W},
+        {x=POS_QTY,     t="Count"},
+        {x=POS_MIN,     t="Min"},
+        {x=POS_MAX,     t="Max"},
+        {x=POS_TOTAL,   t="Total"},
     }) do
         local fs = ih:CreateFontString(nil,"OVERLAY","GameFontHighlight")
         fs:SetPoint("LEFT",ih,"LEFT",c.x,0); fs:SetText(c.t)
@@ -336,22 +351,26 @@ function AuctionStats:DrawSummary()
             if not ln then
                 ln = CreateFrame("Button",nil,content,"BackdropTemplate")
                 ln:SetSize(W-60,ROW_H)
-                ln.num   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.id    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.icon  = ln:CreateTexture(nil,"ARTWORK"); ln.icon:SetSize(ICON_SIZE,ICON_SIZE)
-                ln.name  = ln:CreateFontString(nil,"OVERLAY","GameFontNormal"); ln.name:SetWidth(NAME_W); ln.name:SetJustifyH("LEFT")
-                ln.count = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.min   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.max   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.total = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-                ln.num:SetPoint("LEFT",POS_NUM,0)
-                ln.id:SetPoint("LEFT",POS_ID,0)
-                ln.icon:SetPoint("LEFT",POS_ICON,0)
-                ln.name:SetPoint("LEFT",POS_NAME,0)
-                ln.count:SetPoint("LEFT",POS_QTY,0)
-                ln.min:SetPoint("LEFT",POS_MIN,0)
-                ln.max:SetPoint("LEFT",POS_MAX,0)
-                ln.total:SetPoint("LEFT",POS_TOTAL,0)
+                ln.num     = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.id      = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.icon    = ln:CreateTexture(nil,"ARTWORK"); ln.icon:SetSize(ICON_SIZE,ICON_SIZE)
+                ln.name    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal"); ln.name:SetWidth(NAME_W); ln.name:SetJustifyH("LEFT")
+                ln.typ     = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.subtype = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.count   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.min     = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.max     = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.total   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+                ln.num:SetPoint("LEFT", ln, "LEFT", POS_NUM, 0)
+                ln.id:SetPoint("LEFT", ln, "LEFT", POS_ID, 0)
+                ln.icon:SetPoint("LEFT", ln, "LEFT", POS_ICON, 0)
+                ln.name:SetPoint("LEFT", ln, "LEFT", POS_NAME, 0)
+                ln.typ:SetPoint("LEFT", ln, "LEFT", POS_TYPE, 0)
+                ln.subtype:SetPoint("LEFT", ln, "LEFT", POS_SUBTYPE, 0)
+                ln.count:SetPoint("LEFT", ln, "LEFT", POS_QTY, 0)
+                ln.min:SetPoint("LEFT", ln, "LEFT", POS_MIN, 0)
+                ln.max:SetPoint("LEFT", ln, "LEFT", POS_MAX, 0)
+                ln.total:SetPoint("LEFT", ln, "LEFT", POS_TOTAL, 0)
                 lines[i] = ln
             end
 
@@ -362,6 +381,8 @@ function AuctionStats:DrawSummary()
             ln.name:SetText(g.name)
             local r,gg,b = C_Item.GetItemQualityColor(g.quality)
             ln.name:SetTextColor(r,gg,b)
+            ln.typ:SetText(g.itemType or "")
+            ln.subtype:SetText(g.itemSubType or "")
             ln.count:SetText(g.count)
             ln.min:SetText(FormatMoney(g.min_price or 0))
             ln.max:SetText(FormatMoney(g.max_price or 0))
@@ -409,7 +430,7 @@ function AuctionStats:CreateDetailWindow()
         tile     = true, tileSize = 32, edgeSize = 32,
         insets   = { left=8, right=8, top=8, bottom=8 },
     }
-    f:SetBackdropColor(0, 0, 0, 1)    -- чёрный фон, полностью непрозрачный
+    f:SetBackdropColor(0, 0, 0, 1)
     f.title = f:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
     f.title:SetPoint("TOP",0,-8); f.title:SetText("Details")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
@@ -585,11 +606,93 @@ end
 -- 9) ShowDetail
 function AuctionStats:ShowDetail(group)
     self:CreateDetailWindow()
-    self.detailFrame:Raise()                              -- <— поднимаем над всеми
+    self.detailFrame:Raise()
     self.detailFrame.title:SetText(format("Details: %s [%d]",group.name,group.itemID))
     self.detailData = {}
     for _,a in ipairs(group.rawGroup) do tinsert(self.detailData,a) end
     AuctionStats:DrawDetail()
+end
+
+-- Обработка почты: ищем письма "Аукцион состоялся" и записываем продажу в историю
+function AuctionStats:ProcessMail()
+    local n = GetInboxNumItems()
+    print("AuctionStats: ProcessMail start — inbox items =", n)
+
+    for i = 1, n do
+        -- 1) распаковываем заголовок (пятое возвращаемое — вложенные деньги)
+        local _, _, sender, subject, money, _, _, hasItem, wasRead, _, textCreated = GetInboxHeaderInfo(i)
+        subject = subject or ""
+
+        -- 2) чистим цветовые коды и обрезаем пробелы
+        local cleanSubj = subject
+            :gsub("|c%x%x%x%x%x%x%x%x",""):gsub("|r","")
+            :match("^%s*(.-)%s*$")
+
+        -- 3) проверяем, что это письмо о продаже и вычленяем имя и количество из темы
+        local itemName, soldCount = cleanSubj:match("^Аукцион состоялся:%s*(.-)%s*%((%d+)%)$")
+        if not itemName then
+            itemName, soldCount = cleanSubj:match("^Аукцион состоялся:%s*(.-)%s*[xх]%s*(%d+)$")
+        end
+        if not itemName then
+            itemName = cleanSubj:match("^Аукцион состоялся:%s*(.+)$")
+            soldCount = 1
+        else
+            soldCount = tonumber(soldCount)
+        end
+
+        if not itemName then
+            print("  AuctionStats: skip mail, subject =", cleanSubj)
+        else
+            local mailKey = sender.."|"..cleanSubj.."|"..tostring(textCreated)
+            if AuctionStatsDB.processedMails[mailKey] then
+                print("  AuctionStats: already processed:", mailKey)
+            else
+                print("  AuctionStats: sale mail →", itemName, "x"..soldCount)
+
+                -- 4) определяем itemID из вложения или из кэша dbAuctions
+                local itemLink
+                if hasItem then
+                    for slot=1, ATTACHMENTS_MAX_RECEIVE do
+                        local link = GetInboxItemLink(i, slot)
+                        if link then itemLink = link break end
+                    end
+                end
+
+                local itemID
+                if itemLink then
+                    itemID = tonumber(itemLink:match("item:(%d+)"))
+                    print("   → parsed link:", itemLink, "ID=", tostring(itemID))
+                else
+                    local lname = itemName:lower()
+                    for _, a in ipairs(self.dbAuctions) do
+                        if a.name and a.name:lower() == lname then
+                            itemID = a.itemID
+                            print("   → found in cache:", a.name, "ID=", itemID)
+                            break
+                        end
+                    end
+                end
+
+                if itemID then
+                    -- 5) use attached money as totalSale
+                    local totalPrice = money or 0
+                    print("   → totalSale from mail attachment =", totalPrice)
+
+                    -- 6) записываем в историю
+                    self:RecordHistory({ itemID = itemID }, soldCount, totalPrice, nil, "продано")
+
+                    -- 7) помечаем письмо
+                    AuctionStatsDB.processedMails[mailKey] = true
+                    print("   → Marked processed:", mailKey)
+                else
+                    print("   !!! AuctionStats: не удалось определить itemID для", itemName)
+                    -- не помечаем, чтобы попытаться снова
+                end
+            end
+        end
+    end
+
+    print("AuctionStats: ProcessMail end")
 end
 
 -- 10) Обработчик событий
@@ -597,22 +700,28 @@ local handler = CreateFrame("Frame")
 handler:RegisterEvent("ADDON_LOADED")
 handler:RegisterEvent("AUCTION_HOUSE_SHOW")
 handler:RegisterEvent("OWNED_AUCTIONS_UPDATED")
+handler:RegisterEvent("MAIL_INBOX_UPDATE")
 handler:SetScript("OnEvent", function(_, e, arg1)
-    print("AuctionStats Debug: Event received:", e, arg1 or "")
     if e=="ADDON_LOADED" and arg1=="AuctionStats" then
         AuctionStatsDB.history = AuctionStatsDB.history or {}
+        AuctionStatsDB.processedMails = AuctionStatsDB.processedMails or {}
         if AuctionStatsDB.storedAuctions and #AuctionStatsDB.storedAuctions>0 then
             AuctionStats.dbAuctions = AuctionStatsDB.storedAuctions
         end
         if AuctionStatsDB.lastSyncTime then
             AuctionStats.lastSyncTime = AuctionStatsDB.lastSyncTime
         end
+
     elseif e=="AUCTION_HOUSE_SHOW" then
         C_AuctionHouse.QueryOwnedAuctions({})
+
     elseif e=="OWNED_AUCTIONS_UPDATED" then
         AuctionStats:CacheAuctions()
         if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then AuctionStats:DrawSummary() end
         if AuctionStats.detailFrame and AuctionStats.detailFrame:IsShown() then AuctionStats:DrawDetail() end
+
+    elseif e=="MAIL_INBOX_UPDATE" then
+        AuctionStats:ProcessMail()
     end
 end)
 
@@ -623,34 +732,21 @@ SlashCmdList["AUCTIONSTATS"] = function()
     AuctionStats:DrawSummary()
 end
 
--- ==============================
--- Minimap Button
--- ==============================
+-- Minimap‑кнопка
 local button = CreateFrame("Button", "AuctionStatsMinimapButton", Minimap)
 button:SetSize(32,32)
 button:SetFrameStrata("MEDIUM")
-
--- иконка (можете заменить на любую другую)
 button.icon = button:CreateTexture(nil,"BACKGROUND")
 button.icon:SetAllPoints()
 button.icon:SetTexture("Interface\\Icons\\INV_Misc_Gear_01")
-
--- подсветка при наведении
 button.highlight = button:CreateTexture(nil,"HIGHLIGHT")
 button.highlight:SetAllPoints()
 button.highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-
--- позиция (здесь — верхний левый угол миникарты)
 button:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
-
--- перетаскивание
-button:RegisterForDrag("LeftButton")
-button:SetMovable(true)
+button:RegisterForDrag("LeftButton"); button:SetMovable(true)
 button:SetScript("OnDragStart", function(self) self:StartMoving() end)
 button:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
-
--- клик: toggle окна аддона
-button:SetScript("OnClick", function(self, btn)
+button:SetScript("OnClick", function(self)
     if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then
         AuctionStats.summaryFrame:Hide()
     else
@@ -658,8 +754,6 @@ button:SetScript("OnClick", function(self, btn)
         AuctionStats:DrawSummary()
     end
 end)
-
--- tooltip
 button:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:SetText("AuctionStats", 1,1,1)

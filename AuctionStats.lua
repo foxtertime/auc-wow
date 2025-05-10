@@ -425,3 +425,47 @@ end)
 -- 11) Slash
 SLASH_AUCTIONSTATS1="/astat"
 SlashCmdList["AUCTIONSTATS"]=function() AuctionStats:CreateSummaryWindow(); AuctionStats:DrawSummary() end
+
+-- ==============================
+-- Minimap Button
+-- ==============================
+local button = CreateFrame("Button", "AuctionStatsMinimapButton", Minimap)
+button:SetSize(32,32)
+button:SetFrameStrata("MEDIUM")
+-- иконка (можете подставить свою)
+button.icon = button:CreateTexture(nil,"BACKGROUND")
+button.icon:SetAllPoints()
+button.icon:SetTexture("Interface\\Icons\\INV_Misc_Gear_01")  
+
+-- подсветка при наведении
+button.highlight = button:CreateTexture(nil,"HIGHLIGHT")
+button.highlight:SetAllPoints()
+button.highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+-- позиционирование (пример — верхний левый угол)
+button:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
+
+-- перетаскивание
+button:RegisterForDrag("LeftButton")
+button:SetMovable(true)
+button:SetScript("OnDragStart", function(self) self:StartMoving() end)
+button:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+
+-- клик открывает/скрывает окно
+button:SetScript("OnClick", function(self, button)
+    if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then
+        AuctionStats.summaryFrame:Hide()
+    else
+        AuctionStats:CreateSummaryWindow()
+        AuctionStats:DrawSummary()
+    end
+end)
+
+-- tooltip
+button:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText("AuctionStats", 1, 1, 1)
+    GameTooltip:AddLine("Click to toggle AuctionStats window", .8, .8, .8)
+    GameTooltip:Show()
+end)
+button:SetScript("OnLeave", function() GameTooltip:Hide() end)

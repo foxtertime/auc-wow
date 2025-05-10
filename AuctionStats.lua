@@ -1,4 +1,4 @@
--- AuctionStats.lua  – синхронизация только по событиям, сохранение, лог, поиск, статистика, Total, подсветка
+-- AuctionStats.lua  – корректный учёт Qty*Buyout для Total, синхронизация по событиям, сохранение, лог, поиск, статистика, подсветка
 
 -- В AuctionStats.toc:
 -- ## SavedVariables: AuctionStatsDB
@@ -12,36 +12,35 @@ local print     = print
 
 local AuctionStats = {
     dbAuctions     = {},
+    lastSyncTime   = nil,
+
     summaryFrame   = nil,
+    summarySearch  = nil,
     summaryContent = nil,
     summaryLines   = {},
-    summarySearch  = nil,
     summaryStats   = nil,
+
     detailFrame    = nil,
+    detailSearch   = nil,
     detailContent  = nil,
     detailLines    = {},
-    detailSearch   = nil,
     detailStats    = nil,
     detailData     = {},
-    lastSyncTime   = nil,
 }
 
 -- размеры
 local W, H = 1000, 650
 local ROW_H, HDR_H, ICON_SIZE = 20, 20, 14
 
--- позиции колонок Summary
-local POS_NUM   =   0
-local POS_ID    =  40
-local POS_ICON  = 100
-local POS_NAME  = 140
-local NAME_W    = 400
+-- колонки Summary
+local POS_NUM, POS_ID, POS_ICON, POS_NAME = 0, 40, 100, 140
+local NAME_W = 400
 local POS_QTY   = POS_NAME + NAME_W + 10
 local POS_MIN   = POS_QTY  + 60
 local POS_MAX   = POS_MIN  + 120
 local POS_TOTAL = POS_MAX  + 120
 
--- позиции колонок Detail
+-- колонки Detail
 local D_POS_NUM   =   0
 local D_POS_ID    =  40
 local D_POS_ICON  = 100
@@ -53,16 +52,16 @@ local D_POS_TIME  = D_POS_QTY + 60
 local D_POS_BUY   = D_POS_TIME + 120
 local D_POS_BID   = D_POS_BUY + 120
 
--- форматирование
+-- утилиты
 local function FormatMoney(c)
     local g = math.floor(c/10000)
     local s = math.floor((c%10000)/100)
     local k = c%100
-    local p = {}
-    if g>0 then tinsert(p, g.."|TInterface\\MoneyFrame\\UI-GoldIcon:14:14:0:0|t") end
-    if s>0 then tinsert(p, s.."|TInterface\\MoneyFrame\\UI-SilverIcon:14:14:0:0|t") end
-    tinsert(p, k.."|TInterface\\MoneyFrame\\UI-CopperIcon:14:14:0:0|t")
-    return table.concat(p," ")
+    local parts = {}
+    if g>0 then tinsert(parts, g.."|TInterface\\MoneyFrame\\UI-GoldIcon:14:14:0:0|t") end
+    if s>0 then tinsert(parts, s.."|TInterface\\MoneyFrame\\UI-SilverIcon:14:14:0:0|t") end
+    tinsert(parts, k.."|TInterface\\MoneyFrame\\UI-CopperIcon:14:14:0:0|t")
+    return table.concat(parts," ")
 end
 
 local TimeBands = {
@@ -80,9 +79,9 @@ local function SecsToShort(sec)
     return math.floor(h/24).."d"
 end
 
--- 1) Кэш лотов по сигналу OWNED_AUCTIONS_UPDATED
+-- 1) Синхронизация лотов
 function AuctionStats:CacheAuctions()
-    print("AuctionStats: Начата синхронизация лотов…")
+    print("AuctionStats: Начата синхронизация…")
     local rawAPI = C_AuctionHouse.GetOwnedAuctions()
     local useAPI = rawAPI and #rawAPI>0
     local src    = useAPI and rawAPI or AuctionStatsDB.storedAuctions
@@ -118,11 +117,11 @@ function AuctionStats:CacheAuctions()
     end
 
     self.lastSyncTime = date("%Y-%m-%d %H:%M:%S", GetServerTime())
-    print(format("AuctionStats: Синхронизация завершена: %d лотов, %s",
+    print(format("AuctionStats: Синхронизация завершена — %d лотов, %s",
         #self.dbAuctions, self.lastSyncTime))
 end
 
--- 2) Группировка
+-- 2) Группировка с учётом quantity*buyout
 function AuctionStats:GroupAuctions()
     local groups = {}
     for _,a in ipairs(self.dbAuctions) do
@@ -142,8 +141,8 @@ function AuctionStats:GroupAuctions()
             }
         end
         local g = groups[id]
-        g.count = g.count + 1
-        g.total = g.total + a.rawBuyout
+        g.count  = g.count + a.quantity                          -- sum Qty
+        g.total  = g.total + (a.rawBuyout * a.quantity)          -- sum Qty*rawBuyout
         if not g.min_price or a.rawBuyout < g.min_price then g.min_price = a.rawBuyout end
         if not g.max_price or a.rawBuyout > g.max_price then g.max_price = a.rawBuyout end
         tinsert(g.rawGroup, a)
@@ -154,7 +153,7 @@ function AuctionStats:GroupAuctions()
     return list
 end
 
--- 3) CreateSummaryWindow
+-- 3) Окно Summary
 function AuctionStats:CreateSummaryWindow()
     if self.summaryFrame then return end
     local f = CreateFrame("Frame","AuctionStatsSummaryFrame",UIParent,"BackdropTemplate")
@@ -173,14 +172,12 @@ function AuctionStats:CreateSummaryWindow()
     f.title:SetPoint("TOP",0,-8); f.title:SetText("AuctionStats: Summary")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
 
-    -- поиск
     local sb = CreateFrame("EditBox","AuctionStatsSummarySearchBox",f,"SearchBoxTemplate")
     sb:SetSize(200,20); sb:SetPoint("TOPLEFT",20,-40); sb:SetAutoFocus(false)
     if sb.SetPromptText then sb:SetPromptText("Поиск") end
     sb:SetScript("OnTextChanged", function() AuctionStats:DrawSummary() end)
     self.summarySearch = sb
 
-    -- колонки
     local hdr = CreateFrame("Frame",nil,f)
     hdr:SetSize(W-60,HDR_H); hdr:SetPoint("TOPLEFT",20,-70)
     for _,c in ipairs({
@@ -204,7 +201,6 @@ function AuctionStats:CreateSummaryWindow()
     sc:SetScrollChild(ct)
     self.summaryContent = ct
 
-    -- статистика
     local stats = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
     stats:SetPoint("BOTTOMLEFT",20,20)
     self.summaryStats = stats
@@ -212,7 +208,7 @@ function AuctionStats:CreateSummaryWindow()
     self.summaryFrame = f
 end
 
--- 4) DrawSummary (без авто-Cache, с фильтром и статистикой)
+-- 4) Рисуем Summary
 function AuctionStats:DrawSummary()
     local groups = self:GroupAuctions()
     local filter = strlower(self.summarySearch:GetText() or "")
@@ -260,23 +256,25 @@ function AuctionStats:DrawSummary()
         ln.count:SetText(g.count)
         ln.min :SetText(FormatMoney(g.min_price or 0))
         ln.max :SetText(FormatMoney(g.max_price or 0))
-        ln.total:SetText(FormatMoney(g.total or 0))
+        ln.total:SetText(FormatMoney(g.total or 0))  -- теперь sum(Qty*Buyout)
         ln:Show()
 
-        ln:SetScript("OnMouseUp",function(_,btn)
+        ln:SetScript("OnMouseUp", function(_,btn)
             if btn=="LeftButton" then AuctionStats:ShowDetail(g) end
         end)
-        ln:SetScript("OnEnter",function(self)
+        ln:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self,"ANCHOR_RIGHT")
             GameTooltip:SetHyperlink(g.link)
             GameTooltip:Show()
         end)
-        ln:SetScript("OnLeave",function() GameTooltip:Hide() end)
+        ln:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    -- статистика + время sync
     local totG, totI, totC = #filtered, 0, 0
-    for _,g in ipairs(filtered) do totI=totI+g.count; totC=totC+g.total end
+    for _,g in ipairs(filtered) do
+        totI = totI + g.count
+        totC = totC + g.total
+    end
     self.summaryStats:SetText(format(
         "Groups: %d   Items: %d   Total: %s   Last Sync: %s",
         totG, totI, FormatMoney(totC), self.lastSyncTime or "N/A"
@@ -285,7 +283,7 @@ function AuctionStats:DrawSummary()
     self.summaryFrame:Show()
 end
 
--- 5) CreateDetailWindow
+-- 5) Окно Detail
 function AuctionStats:CreateDetailWindow()
     if self.detailFrame then return end
     local f = CreateFrame("Frame","AuctionStatsDetailFrame",UIParent,"BackdropTemplate")
@@ -304,14 +302,12 @@ function AuctionStats:CreateDetailWindow()
     f.title:SetPoint("TOP",0,-8); f.title:SetText("Details")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
 
-    -- поиск
     local sb = CreateFrame("EditBox","AuctionStatsDetailSearchBox",f,"SearchBoxTemplate")
     sb:SetSize(200,20); sb:SetPoint("TOPLEFT",20,-40); sb:SetAutoFocus(false)
     if sb.SetPromptText then sb:SetPromptText("Поиск") end
-    sb:SetScript("OnTextChanged",function() AuctionStats:DrawDetail() end)
+    sb:SetScript("OnTextChanged", function() AuctionStats:DrawDetail() end)
     self.detailSearch = sb
 
-    -- колонки
     local hdr = CreateFrame("Frame",nil,f)
     hdr:SetSize(W-60,HDR_H); hdr:SetPoint("TOPLEFT",20,-70)
     for _,c in ipairs({
@@ -336,7 +332,6 @@ function AuctionStats:CreateDetailWindow()
     sc:SetScrollChild(ct)
     self.detailContent = ct
 
-    -- статистика
     local stats = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
     stats:SetPoint("BOTTOMLEFT",20,20)
     self.detailStats = stats
@@ -344,11 +339,12 @@ function AuctionStats:CreateDetailWindow()
     self.detailFrame = f
 end
 
--- 6) DrawDetail
+-- 6) Рисуем Detail
 function AuctionStats:DrawDetail()
-    local list = self.detailData or {}
+    local list   = self.detailData or {}
     local filter = strlower(self.detailSearch:GetText() or "")
     local filtered = {}
+
     for _,a in ipairs(list) do
         if filter=="" or strlower(a.name):find(filter,1,true) then
             tinsert(filtered,a)
@@ -399,17 +395,20 @@ function AuctionStats:DrawDetail()
         ln.bd  :SetText(a.bid)
         ln:Show()
 
-        ln:EnableMouse(true)
-        ln:SetScript("OnEnter",function(self)
+        ln:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self,"ANCHOR_RIGHT")
             GameTooltip:SetHyperlink(a.link)
             GameTooltip:Show()
         end)
-        ln:SetScript("OnLeave",function() GameTooltip:Hide() end)
+        ln:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    local cnt, cost = #filtered, 0
-    for _,a in ipairs(filtered) do cost = cost + a.rawBuyout end
+    -- статистика: sum(quantity) и sum(quantity*rawBuyout)
+    local cnt, cost = 0, 0
+    for _,a in ipairs(filtered) do
+        cnt  = cnt  + a.quantity
+        cost = cost + (a.rawBuyout * a.quantity)
+    end
     self.detailStats:SetText(format(
         "Items: %d   Total: %s   Last Sync: %s",
         cnt, FormatMoney(cost), self.lastSyncTime or "N/A"
@@ -427,7 +426,7 @@ function AuctionStats:ShowDetail(group)
     self:DrawDetail()
 end
 
--- 8) События (синхронизация только по сигналам)
+-- 8) События
 local handler = CreateFrame("Frame")
 handler:RegisterEvent("ADDON_LOADED")
 handler:RegisterEvent("AUCTION_HOUSE_SHOW")
@@ -436,7 +435,7 @@ handler:SetScript("OnEvent", function(_, e, arg1)
     if e=="ADDON_LOADED" and arg1=="AuctionStats" then
         if AuctionStatsDB.storedAuctions and #AuctionStatsDB.storedAuctions>0 then
             AuctionStats.dbAuctions = AuctionStatsDB.storedAuctions
-            print("AuctionStats: Загружены "..#AuctionStats.dbAuctions.." сохраненные лоты.")
+            print("AuctionStats: Загружено "..#AuctionStats.dbAuctions.." сохранённых лотов.")
         end
     elseif e=="AUCTION_HOUSE_SHOW" then
         C_AuctionHouse.QueryOwnedAuctions({})

@@ -1,4 +1,4 @@
--- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями, столбцами Type/Subtype и обработкой почты
+-- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями, столбцами Type/Subtype, обработкой почты и статистикой в детализации
 
 -- В AuctionStats.toc:
 -- ## SavedVariables: AuctionStatsDB
@@ -42,6 +42,7 @@ local AuctionStats = {
     detailLines      = {},
     historyContent   = nil,
     historyLines     = {},
+    historyStats     = nil,
     detailStats      = nil,
     detailData       = {},
 }
@@ -77,7 +78,7 @@ local H_POS_TIME      = 40
 local H_POS_QTY       = 260
 local H_POS_PRICE     = 340
 local H_POS_DUR       = 480
-local H_POS_OPERATION = H_POS_DUR + 80
+local H_POS_STATUS    = H_POS_DUR + 80
 
 -- маппинг длительности в часы
 local DurationHours = { [1]=12, [2]=24, [3]=48 }
@@ -111,7 +112,7 @@ local function SecsToShort(sec)
 end
 
 -- 1) Запись истории операций
-function AuctionStats:RecordHistory(itemKey, quantity, rawBuyout, durationCode, operation)
+function AuctionStats:RecordHistory(itemKey, quantity, rawBuyout, durationCode, status)
     local id = itemKey and itemKey.itemID or 0
     if id<=0 then return end
     AuctionStatsDB.history[id] = AuctionStatsDB.history[id] or {}
@@ -121,19 +122,19 @@ function AuctionStats:RecordHistory(itemKey, quantity, rawBuyout, durationCode, 
         rawBuyout    = rawBuyout,
         buyout       = rawBuyout>0 and FormatMoney(rawBuyout) or "-",
         durationCode = durationCode,
-        operation    = operation,
+        status       = status,
     })
-    print(format("AuctionStats: History recorded for %d x%d op=%s", id, quantity, operation))
+    print(format("AuctionStats: History recorded for %d x%d status=%s", id, quantity, status))
 end
 
 -- 2) Хуки Auction House API
 hooksecurefunc(C_AuctionHouse, "PostCommodity", function(itemLocation, duration, quantity, unitPrice)
     local key = C_AuctionHouse.GetItemKeyFromItem(itemLocation)
-    AuctionStats:RecordHistory(key, quantity or 0, unitPrice or 0, duration, "выставление на продажу")
+    AuctionStats:RecordHistory(key, quantity or 0, unitPrice or 0, duration, "аукцион объявлен")
 end)
 hooksecurefunc(C_AuctionHouse, "PostItem", function(itemLocation, duration, quantity, bidAmount, buyoutAmount)
     local key = C_AuctionHouse.GetItemKeyFromItem(itemLocation)
-    AuctionStats:RecordHistory(key, quantity or 0, buyoutAmount or 0, duration, "выставление на продажу")
+    AuctionStats:RecordHistory(key, quantity or 0, buyoutAmount or 0, duration, "аукцион объявлен")
 end)
 
 -- 3) Кэш лотов (сохранение LastSyncTime + Type/Subtype)
@@ -236,7 +237,6 @@ end
 -- 5) Создание окна Summary
 function AuctionStats:CreateSummaryWindow()
     if self.summaryFrame then return end
-
     local f = CreateFrame("Frame","AuctionStatsSummaryFrame",UIParent,"BackdropTemplate")
     f:SetSize(W,H); f:SetPoint("CENTER"); f:EnableMouse(true); f:SetMovable(true)
     f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing)
@@ -251,16 +251,14 @@ function AuctionStats:CreateSummaryWindow()
     f.title:SetPoint("TOP",0,-8); f.title:SetText("AuctionStats: Summary")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
 
-    -- поиск
     local sb = CreateFrame("EditBox","AuctionStatsSummarySearchBox",f,"SearchBoxTemplate")
     sb:SetSize(200,20); sb:SetPoint("TOPLEFT",20,-40); sb:SetAutoFocus(false)
-    if sb.SetPromptText then sb:SetPromptText("Поиск") end
+    if sb.SetPromptText then sb:SetPromptText("Search") end
     sb:SetScript("OnTextChanged",function() AuctionStats:DrawSummary() end)
     self.summarySearch = sb
 
     local half = (H-160)/2
 
-    -- Active label/header/scroll
     local al = f:CreateFontString(nil,"OVERLAY","GameFontHighlight")
     al:SetPoint("TOPLEFT",sb,"BOTTOMLEFT",0,-10); al:SetText("Active Groups")
     self.summaryActiveLabel = al
@@ -292,7 +290,6 @@ function AuctionStats:CreateSummaryWindow()
     self.summaryActiveScroll  = asc
     self.summaryActiveContent = act
 
-    -- Inactive label/header/scroll
     local il = f:CreateFontString(nil,"OVERLAY","GameFontHighlight")
     il:SetPoint("TOPLEFT",asc,"BOTTOMLEFT",0,-10); il:SetText("Inactive Groups")
     self.summaryInactiveLabel = il
@@ -435,14 +432,12 @@ function AuctionStats:CreateDetailWindow()
     f.title:SetPoint("TOP",0,-8); f.title:SetText("Details")
     CreateFrame("Button",nil,f,"UIPanelCloseButton"):SetPoint("TOPRIGHT",-6,-6)
 
-    -- поиск
     local sb = CreateFrame("EditBox","AuctionStatsDetailSearchBox",f,"SearchBoxTemplate")
     sb:SetSize(200,20); sb:SetPoint("TOPLEFT",20,-40); sb:SetAutoFocus(false)
-    if sb.SetPromptText then sb:SetPromptText("Поиск") end
+    if sb.SetPromptText then sb:SetPromptText("Search") end
     sb:SetScript("OnTextChanged", function() AuctionStats:DrawDetail() end)
     self.detailSearch = sb
 
-    -- шапка Detail
     local hdr = CreateFrame("Frame",nil,f)
     hdr:SetSize(W-60,HDR_H); hdr:SetPoint("TOPLEFT",20,-70)
     for _,c in ipairs({
@@ -462,7 +457,6 @@ function AuctionStats:CreateDetailWindow()
     sc:SetScrollChild(ct)
     self.detailContent = ct
 
-    -- History
     local hh = f:CreateFontString(nil,"OVERLAY","GameFontHighlight")
     hh:SetPoint("TOPLEFT",sc,"BOTTOMLEFT",0,-10); hh:SetText("History")
     local hhdr = CreateFrame("Frame",nil,f)
@@ -473,7 +467,7 @@ function AuctionStats:CreateDetailWindow()
         {x=H_POS_QTY,       t="Qty"},
         {x=H_POS_PRICE,     t="Price"},
         {x=H_POS_DUR,       t="Dur"},
-        {x=H_POS_OPERATION, t="Operation"},
+        {x=H_POS_STATUS,    t="Status"},
     }) do
         local fs = hhdr:CreateFontString(nil,"OVERLAY","GameFontHighlight")
         fs:SetPoint("LEFT",hhdr,"LEFT",c.x,0); fs:SetText(c.t)
@@ -486,30 +480,38 @@ function AuctionStats:CreateDetailWindow()
     hsc:SetScrollChild(hct)
     self.historyContent = hct
 
+    -- новый блок статистики истории
+    self.historyStats = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
+    self.historyStats:SetPoint("LEFT", hsc, "BOTTOMLEFT", 0, -20)
+
     self.detailStats = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
     self.detailStats:SetPoint("BOTTOMLEFT",20,20)
 
     self.detailFrame = f
 end
 
--- 8) Рисуем Detail + History
+-- 8) Рисуем Detail + History + Stats
 function AuctionStats:DrawDetail()
     local list   = self.detailData or {}
     local filter = strlower(self.detailSearch:GetText() or "")
     local filtered = {}
     for _,a in ipairs(list) do
-        if filter=="" or strlower(a.name):find(filter,1,true) then tinsert(filtered,a) end
+        if filter=="" or strlower(a.name):find(filter,1,true) then
+            tinsert(filtered, a)
+        end
     end
 
-    -- draw detail rows
+    -- DETAIL ROWS
     local ct = self.detailContent
-    ct:SetSize(W-60, #filtered*ROW_H)
+    ct:SetSize(W-60, #filtered * ROW_H)
     for _,ln in ipairs(self.detailLines) do ln:Hide() end
+
     for i,a in ipairs(filtered) do
         local ln = self.detailLines[i]
         if not ln then
-            ln = CreateFrame("Frame",nil,ct)
-            ln:SetSize(W-60,ROW_H)
+            ln = CreateFrame("Frame", nil, ct)
+            ln:SetSize(W-60, ROW_H)
+
             ln.num   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
             ln.id    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
             ln.icon  = ln:CreateTexture(nil,"ARTWORK"); ln.icon:SetSize(ICON_SIZE,ICON_SIZE)
@@ -519,19 +521,31 @@ function AuctionStats:DrawDetail()
             ln.tl    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
             ln.bo    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
             ln.bd    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.num:SetPoint("LEFT",D_POS_NUM,0)
-            ln.id:SetPoint("LEFT",D_POS_ID,0)
-            ln.icon:SetPoint("LEFT",D_POS_ICON,0)
-            ln.name:SetPoint("LEFT",D_POS_NAME,0)
+
+            ln.num:SetPoint("LEFT", D_POS_NUM,  0)
+            ln.id:SetPoint("LEFT",  D_POS_ID,   0)
+            ln.icon:SetPoint("LEFT",D_POS_ICON, 0)
+            ln.name:SetPoint("LEFT",D_POS_NAME, 0)
             ln.level:SetPoint("LEFT",D_POS_LEVEL,0)
-            ln.qty:SetPoint("LEFT",D_POS_QTY,0)
-            ln.tl:SetPoint("LEFT",D_POS_TIME,0)
-            ln.bo:SetPoint("LEFT",D_POS_BUY,0)
-            ln.bd:SetPoint("LEFT",D_POS_BID,0)
+            ln.qty:SetPoint("LEFT", D_POS_QTY,  0)
+            ln.tl:SetPoint("LEFT",  D_POS_TIME, 0)
+            ln.bo:SetPoint("LEFT",  D_POS_BUY,  0)
+            ln.bd:SetPoint("LEFT",  D_POS_BID,  0)
+
+            -- Tooltip on hover
+            ln:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink(a.link)
+                GameTooltip:Show()
+            end)
+            ln:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+
             self.detailLines[i] = ln
         end
 
-        ln:SetPoint("TOPLEFT",ct,"TOPLEFT",0,-(i-1)*ROW_H)
+        ln:SetPoint("TOPLEFT", ct, "TOPLEFT", 0, -(i-1)*ROW_H)
         ln.num:SetText(i)
         ln.id:SetText(a.itemID)
         ln.icon:SetTexture(a.icon)
@@ -544,64 +558,77 @@ function AuctionStats:DrawDetail()
         ln.bo:SetText(a.buyout)
         ln.bd:SetText(a.bid)
         ln:Show()
-
-        ln:SetScript("OnEnter",function(self)
-            GameTooltip:SetOwner(self,"ANCHOR_RIGHT")
-            GameTooltip:SetHyperlink(a.link)
-            GameTooltip:Show()
-        end)
-        ln:SetScript("OnLeave",function() GameTooltip:Hide() end)
     end
 
-    -- draw history rows
+    -- HISTORY ROWS
     local title = self.detailFrame.title:GetText() or ""
     local id    = tonumber(title:match("%[(%d+)%]"))
     local hist  = (id and AuctionStatsDB.history[id]) or {}
     local hct   = self.historyContent
-    hct:SetSize(W-60, #hist*ROW_H)
+    hct:SetSize(W-60, #hist * ROW_H)
     for _,ln in ipairs(self.historyLines) do ln:Hide() end
+
     for i,e in ipairs(hist) do
         local ln = self.historyLines[i]
         if not ln then
-            ln = CreateFrame("Frame",nil,hct)
-            ln:SetSize(W-60,ROW_H)
-            ln.num = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.time= ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.qty = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.price=ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.dur = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.op  = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
-            ln.num:SetPoint("LEFT",H_POS_NUM,0)
-            ln.time:SetPoint("LEFT",H_POS_TIME,0)
-            ln.qty:SetPoint("LEFT",H_POS_QTY,0)
-            ln.price:SetPoint("LEFT",H_POS_PRICE,0)
-            ln.dur:SetPoint("LEFT",H_POS_DUR,0)
-            ln.op :SetPoint("LEFT",H_POS_OPERATION,0)
+            ln = CreateFrame("Frame", nil, hct)
+            ln:SetSize(W-60, ROW_H)
+
+            ln.num    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+            ln.time   = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+            ln.qty    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+            ln.price  = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+            ln.dur    = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+            ln.status = ln:CreateFontString(nil,"OVERLAY","GameFontNormal")
+
+            ln.num:SetPoint("LEFT", H_POS_NUM,    0)
+            ln.time:SetPoint("LEFT",H_POS_TIME,   0)
+            ln.qty:SetPoint("LEFT", H_POS_QTY,    0)
+            ln.price:SetPoint("LEFT",H_POS_PRICE,  0)
+            ln.dur:SetPoint("LEFT", H_POS_DUR,    0)
+            ln.status:SetPoint("LEFT",H_POS_STATUS,0)
+
             self.historyLines[i] = ln
         end
 
-        ln:SetPoint("TOPLEFT",hct,"TOPLEFT",0,-(i-1)*ROW_H)
-        ln.num :SetText(i)
+        ln:SetPoint("TOPLEFT", hct, "TOPLEFT", 0, -(i-1)*ROW_H)
+        ln.num:SetText(i)
         ln.time:SetText(e.time)
-        ln.qty :SetText(e.quantity)
+        ln.qty:SetText(e.quantity)
         ln.price:SetText(e.buyout)
-        local code = e.durationCode or e.duration
-        local hrs  = DurationHours[code] or code or 0
-        ln.dur :SetText(hrs.."h")
-        ln.op  :SetText(e.operation or "")
+        local hrs = DurationHours[e.durationCode or e.duration] or 0
+        ln.dur:SetText(hrs.."h")
+        ln.status:SetText(e.status or "")
         ln:Show()
     end
 
-    -- stats bottom
-    local cnt,cost=0,0
-    for _,a in ipairs(filtered) do cnt=cnt+a.quantity; cost=cost+(a.rawBuyout*a.quantity) end
+    -- STATS для Detail (без изменений)
+    local cnt, cost = 0, 0
+    for _,a in ipairs(filtered) do
+        cnt  = cnt + a.quantity
+        cost = cost + (a.rawBuyout * a.quantity)
+    end
     self.detailStats:SetText(format(
         "Items: %d   Total: %s   Last Sync: %s",
         cnt, FormatMoney(cost), self.lastSyncTime or "N/A"
     ))
 
+    -- STATS для History: считаем только "аукцион состоялся"
+    local totalQty, totalGold = 0, 0
+    for _,e in ipairs(hist) do
+        if e.status == "аукцион состоялся" then
+            totalQty  = totalQty  + (e.quantity or 0)
+            totalGold = totalGold + (e.rawBuyout or 0)
+        end
+    end
+    self.historyStats:SetText(format(
+        "History sold: %d   Total gold: %s",
+        totalQty, FormatMoney(totalGold)
+    ))
+
     self.detailFrame:Show()
 end
+
 
 -- 9) ShowDetail
 function AuctionStats:ShowDetail(group)
@@ -619,74 +646,84 @@ function AuctionStats:ProcessMail()
     print("AuctionStats: ProcessMail start — inbox items =", n)
 
     for i = 1, n do
-        -- 1) распаковываем заголовок (пятое возвращаемое — вложенные деньги)
-        local _, _, sender, subject, money, _, _, hasItem, wasRead, _, textCreated = GetInboxHeaderInfo(i)
+        local _, _, sender, subject, money, _, _, hasItem, _, _, textCreated = GetInboxHeaderInfo(i)
         subject = subject or ""
-
-        -- 2) чистим цветовые коды и обрезаем пробелы
         local cleanSubj = subject
             :gsub("|c%x%x%x%x%x%x%x%x",""):gsub("|r","")
             :match("^%s*(.-)%s*$")
 
-        -- 3) проверяем, что это письмо о продаже и вычленяем имя и количество из темы
-        local itemName, soldCount = cleanSubj:match("^Аукцион состоялся:%s*(.-)%s*%((%d+)%)$")
-        if not itemName then
-            itemName, soldCount = cleanSubj:match("^Аукцион состоялся:%s*(.-)%s*[xх]%s*(%d+)$")
-        end
-        if not itemName then
-            itemName = cleanSubj:match("^Аукцион состоялся:%s*(.+)$")
-            soldCount = 1
-        else
-            soldCount = tonumber(soldCount)
+        local isSale   = cleanSubj:match("^Аукцион состоялся")
+        local isFailed = cleanSubj:match("^Аукцион не состоялся")
+
+        local itemName, count
+        if isSale or isFailed then
+            -- общий шаблон: "Аукцион состоялся: Name (num)" или "Аукцион не состоялся: Name (num)"
+            -- сначала вытащим то, что после двоеточия
+            local after = cleanSubj:match("^[^:]+:%s*(.+)$")
+            if after then
+                -- попробуем разбить на имя и число в скобках
+                local name, num = after:match("^(.-)%s*%((%d+)%)$")
+                if name then
+                    itemName = name
+                    count    = tonumber(num)
+                else
+                    itemName = after
+                    count    = 1
+                end
+            end
         end
 
         if not itemName then
             print("  AuctionStats: skip mail, subject =", cleanSubj)
         else
+            local status = isSale  and "аукцион состоялся"
+                          or isFailed and "аукцион не состоялся"
             local mailKey = sender.."|"..cleanSubj.."|"..tostring(textCreated)
+
             if AuctionStatsDB.processedMails[mailKey] then
                 print("  AuctionStats: already processed:", mailKey)
             else
-                print("  AuctionStats: sale mail →", itemName, "x"..soldCount)
+                print("  AuctionStats:", status, itemName, "count="..count)
 
-                -- 4) определяем itemID из вложения или из кэша dbAuctions
+                -- определяем itemID
                 local itemLink
                 if hasItem then
-                    for slot=1, ATTACHMENTS_MAX_RECEIVE do
+                    for slot = 1, ATTACHMENTS_MAX_RECEIVE do
                         local link = GetInboxItemLink(i, slot)
-                        if link then itemLink = link break end
+                        if link then itemLink = link; break end
                     end
                 end
 
                 local itemID
                 if itemLink then
                     itemID = tonumber(itemLink:match("item:(%d+)"))
-                    print("   → parsed link:", itemLink, "ID=", tostring(itemID))
                 else
                     local lname = itemName:lower()
                     for _, a in ipairs(self.dbAuctions) do
                         if a.name and a.name:lower() == lname then
                             itemID = a.itemID
-                            print("   → found in cache:", a.name, "ID=", itemID)
                             break
                         end
                     end
                 end
 
                 if itemID then
-                    -- 5) use attached money as totalSale
-                    local totalPrice = money or 0
-                    print("   → totalSale from mail attachment =", totalPrice)
+                    local totalPrice = isSale and (money or 0) or 0
 
-                    -- 6) записываем в историю
-                    self:RecordHistory({ itemID = itemID }, soldCount, totalPrice, nil, "продано")
+                    -- записываем в историю
+                    self:RecordHistory(
+                        { itemID = itemID },
+                        count,
+                        totalPrice,
+                        nil,
+                        status
+                    )
 
-                    -- 7) помечаем письмо
+                    -- помечаем
                     AuctionStatsDB.processedMails[mailKey] = true
                     print("   → Marked processed:", mailKey)
                 else
                     print("   !!! AuctionStats: не удалось определить itemID для", itemName)
-                    -- не помечаем, чтобы попытаться снова
                 end
             end
         end
@@ -700,8 +737,13 @@ local handler = CreateFrame("Frame")
 handler:RegisterEvent("ADDON_LOADED")
 handler:RegisterEvent("AUCTION_HOUSE_SHOW")
 handler:RegisterEvent("OWNED_AUCTIONS_UPDATED")
-handler:RegisterEvent("MAIL_INBOX_UPDATE")
+handler:RegisterEvent("MAIL_SHOW")           -- срабатывает при открытии почты
+handler:RegisterEvent("MAIL_INBOX_UPDATE")   -- срабатывает при обновлении списка писем
+
 handler:SetScript("OnEvent", function(_, e, arg1)
+    -- debug: посмотреть, какие события приходят
+    print("AuctionStats Event:", e, arg1 or "")
+
     if e=="ADDON_LOADED" and arg1=="AuctionStats" then
         AuctionStatsDB.history = AuctionStatsDB.history or {}
         AuctionStatsDB.processedMails = AuctionStatsDB.processedMails or {}
@@ -720,10 +762,16 @@ handler:SetScript("OnEvent", function(_, e, arg1)
         if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then AuctionStats:DrawSummary() end
         if AuctionStats.detailFrame and AuctionStats.detailFrame:IsShown() then AuctionStats:DrawDetail() end
 
+    elseif e=="MAIL_SHOW" then
+        -- игрок открыл окно почты, запускаем обработку существующих писем
+        if AuctionStats.ProcessMail then AuctionStats:ProcessMail() end
+
     elseif e=="MAIL_INBOX_UPDATE" then
-        AuctionStats:ProcessMail()
+        -- список писем обновился (новое письмо или обновление), снова обрабатываем
+        if AuctionStats.ProcessMail then AuctionStats:ProcessMail() end
     end
 end)
+
 
 -- 11) Slash‑команда
 SLASH_AUCTIONSTATS1 = "/astat"
@@ -746,7 +794,7 @@ button:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
 button:RegisterForDrag("LeftButton"); button:SetMovable(true)
 button:SetScript("OnDragStart", function(self) self:StartMoving() end)
 button:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
-button:SetScript("OnClick", function(self)
+button:SetScript("OnClick", function(self, btn)
     if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then
         AuctionStats.summaryFrame:Hide()
     else

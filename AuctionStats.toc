@@ -1,0 +1,5 @@
+## Interface: 100075
+## Title: AuctionStats
+## Notes: Shows your posted auctions in a scrollable table
+## SavedVariables: AuctionStatsDB
+AuctionStats.lua

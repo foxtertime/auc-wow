@@ -1,13 +1,14 @@
--- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями, столбцами Type/Subtype, обработкой почты и статистикой в детализации
+-- AuctionStats.lua – полный код аддона, с сохранением LastSync между сессиями,
+-- столбцами Type/Subtype, обработкой почты и статистикой в детализации
 
 -- В AuctionStats.toc:
 -- ## SavedVariables: AuctionStatsDB
 
 AuctionStatsDB = AuctionStatsDB or {
     storedAuctions  = {},
-    history         = {},    -- [itemID] = { { time=..., quantity=..., rawBuyout=..., buyout=..., durationCode=..., operation=... }, ... }
+    history         = {},
     lastSyncTime    = nil,
-    processedMails  = {},    -- ключи уже обработанных писем
+    processedMails  = {},
 }
 
 local tinsert  = table.insert
@@ -141,10 +142,11 @@ end)
 function AuctionStats:CacheAuctions()
     print("AuctionStats Debug: CacheAuctions start")
     local rawAPI = C_AuctionHouse.GetOwnedAuctions()
-    local src    = (rawAPI and #rawAPI>0) and rawAPI or AuctionStatsDB.storedAuctions
+    local src = (rawAPI and #rawAPI > 0) and rawAPI or AuctionStatsDB.storedAuctions
+    if type(src) ~= "table" then src = {} end
 
     self.dbAuctions = {}
-    for _,info in ipairs(src) do
+    for _, info in ipairs(src) do
         local key      = info.itemKey or {}
         local id       = key.itemID or 0
         local lvl      = key.itemLevel or 0
@@ -178,7 +180,7 @@ function AuctionStats:CacheAuctions()
     print(format("AuctionStats Debug: CacheAuctions end — %d lots, %s", #self.dbAuctions, self.lastSyncTime))
 end
 
--- 4) Группировка по ID + включение history‑only групп + Type/Subtype
+-- 4) Группировка по ID + включение history-only групп + Type/Subtype
 function AuctionStats:GroupAuctions()
     local groups = {}
     for _,a in ipairs(self.dbAuctions) do
@@ -480,7 +482,6 @@ function AuctionStats:CreateDetailWindow()
     hsc:SetScrollChild(hct)
     self.historyContent = hct
 
-    -- новый блок статистики истории
     self.historyStats = f:CreateFontString(nil,"OVERLAY","GameFontNormal")
     self.historyStats:SetPoint("LEFT", hsc, "BOTTOMLEFT", 0, -20)
 
@@ -532,15 +533,12 @@ function AuctionStats:DrawDetail()
             ln.bo:SetPoint("LEFT",  D_POS_BUY,  0)
             ln.bd:SetPoint("LEFT",  D_POS_BID,  0)
 
-            -- Tooltip on hover
             ln:SetScript("OnEnter", function(self)
                 GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                 GameTooltip:SetHyperlink(a.link)
                 GameTooltip:Show()
             end)
-            ln:SetScript("OnLeave", function()
-                GameTooltip:Hide()
-            end)
+            ln:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
             self.detailLines[i] = ln
         end
@@ -629,7 +627,6 @@ function AuctionStats:DrawDetail()
     self.detailFrame:Show()
 end
 
-
 -- 9) ShowDetail
 function AuctionStats:ShowDetail(group)
     self:CreateDetailWindow()
@@ -640,7 +637,7 @@ function AuctionStats:ShowDetail(group)
     AuctionStats:DrawDetail()
 end
 
--- Обработка почты: ищем письма "Аукцион состоялся" и записываем продажу в историю
+-- 10) Обработка почты
 function AuctionStats:ProcessMail()
     local n = GetInboxNumItems()
     print("AuctionStats: ProcessMail start — inbox items =", n)
@@ -657,11 +654,8 @@ function AuctionStats:ProcessMail()
 
         local itemName, count
         if isSale or isFailed then
-            -- общий шаблон: "Аукцион состоялся: Name (num)" или "Аукцион не состоялся: Name (num)"
-            -- сначала вытащим то, что после двоеточия
             local after = cleanSubj:match("^[^:]+:%s*(.+)$")
             if after then
-                -- попробуем разбить на имя и число в скобках
                 local name, num = after:match("^(.-)%s*%((%d+)%)$")
                 if name then
                     itemName = name
@@ -685,7 +679,6 @@ function AuctionStats:ProcessMail()
             else
                 print("  AuctionStats:", status, itemName, "count="..count)
 
-                -- определяем itemID
                 local itemLink
                 if hasItem then
                     for slot = 1, ATTACHMENTS_MAX_RECEIVE do
@@ -709,17 +702,7 @@ function AuctionStats:ProcessMail()
 
                 if itemID then
                     local totalPrice = isSale and (money or 0) or 0
-
-                    -- записываем в историю
-                    self:RecordHistory(
-                        { itemID = itemID },
-                        count,
-                        totalPrice,
-                        nil,
-                        status
-                    )
-
-                    -- помечаем
+                    self:RecordHistory({ itemID = itemID }, count, totalPrice, nil, status)
                     AuctionStatsDB.processedMails[mailKey] = true
                     print("   → Marked processed:", mailKey)
                 else
@@ -732,16 +715,15 @@ function AuctionStats:ProcessMail()
     print("AuctionStats: ProcessMail end")
 end
 
--- 10) Обработчик событий
+-- 11) Обработчик событий
 local handler = CreateFrame("Frame")
 handler:RegisterEvent("ADDON_LOADED")
 handler:RegisterEvent("AUCTION_HOUSE_SHOW")
 handler:RegisterEvent("OWNED_AUCTIONS_UPDATED")
-handler:RegisterEvent("MAIL_SHOW")           -- срабатывает при открытии почты
-handler:RegisterEvent("MAIL_INBOX_UPDATE")   -- срабатывает при обновлении списка писем
+handler:RegisterEvent("MAIL_SHOW")
+handler:RegisterEvent("MAIL_INBOX_UPDATE")
 
 handler:SetScript("OnEvent", function(_, e, arg1)
-    -- debug: посмотреть, какие события приходят
     print("AuctionStats Event:", e, arg1 or "")
 
     if e=="ADDON_LOADED" and arg1=="AuctionStats" then
@@ -762,25 +744,19 @@ handler:SetScript("OnEvent", function(_, e, arg1)
         if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then AuctionStats:DrawSummary() end
         if AuctionStats.detailFrame and AuctionStats.detailFrame:IsShown() then AuctionStats:DrawDetail() end
 
-    elseif e=="MAIL_SHOW" then
-        -- игрок открыл окно почты, запускаем обработку существующих писем
-        if AuctionStats.ProcessMail then AuctionStats:ProcessMail() end
-
-    elseif e=="MAIL_INBOX_UPDATE" then
-        -- список писем обновился (новое письмо или обновление), снова обрабатываем
-        if AuctionStats.ProcessMail then AuctionStats:ProcessMail() end
+    elseif e=="MAIL_SHOW" or e=="MAIL_INBOX_UPDATE" then
+        AuctionStats:ProcessMail()
     end
 end)
 
-
--- 11) Slash‑команда
+-- 12) Slash-команда
 SLASH_AUCTIONSTATS1 = "/astat"
 SlashCmdList["AUCTIONSTATS"] = function()
     AuctionStats:CreateSummaryWindow()
     AuctionStats:DrawSummary()
 end
 
--- Minimap‑кнопка
+-- Minimap-кнопка
 local button = CreateFrame("Button", "AuctionStatsMinimapButton", Minimap)
 button:SetSize(32,32)
 button:SetFrameStrata("MEDIUM")
@@ -794,7 +770,7 @@ button:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
 button:RegisterForDrag("LeftButton"); button:SetMovable(true)
 button:SetScript("OnDragStart", function(self) self:StartMoving() end)
 button:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
-button:SetScript("OnClick", function(self, btn)
+button:SetScript("OnClick", function(self)
     if AuctionStats.summaryFrame and AuctionStats.summaryFrame:IsShown() then
         AuctionStats.summaryFrame:Hide()
     else
@@ -809,3 +785,48 @@ button:SetScript("OnEnter", function(self)
     GameTooltip:Show()
 end)
 button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+--------------------------------------------------------------------------------
+-- ▼  ДОБАВЛЯЕМ СТРОКУ «Выставлено на аукционе» ВО ВСЕ ТУЛТИПЫ  (API 11.1.5) ▼ --
+--------------------------------------------------------------------------------
+
+-- 1) Считаем, сколько лотов текущего itemID активно у игрока
+function AuctionStats:GetOwnedCount(itemID)
+    local n = 0
+    for _, entry in ipairs(self.dbAuctions or {}) do
+        if entry.itemID == itemID then
+            n = n + (entry.quantity or 0)
+        end
+    end
+    return n
+end
+
+-- 2) Универсальный обработчик
+local function AddAuctionStatsToTooltip(tt)
+    local _, link = tt:GetItem()
+    if not link then return end
+    local itemID = tonumber(link:match("item:(%d+)"))
+    if not itemID then return end
+
+    local cnt = AuctionStats:GetOwnedCount(itemID)
+    if cnt > 0 then
+        tt:AddLine("|cff00ff00Выставлено на аукционе:|r "..cnt, 1,1,1)
+        tt:Show()
+    end
+end
+
+-- 3) Инвентарь / экипировка
+hooksecurefunc(GameTooltip, "SetBagItem",       AddAuctionStatsToTooltip)
+hooksecurefunc(GameTooltip, "SetInventoryItem", AddAuctionStatsToTooltip)
+
+-- 4) Любые гиперссылки (чат, журнал, аукцион, всё остальное)
+hooksecurefunc(GameTooltip, "SetHyperlink",  AddAuctionStatsToTooltip)
+hooksecurefunc(ShoppingTooltip1, "SetHyperlink", AddAuctionStatsToTooltip)
+hooksecurefunc(ShoppingTooltip2, "SetHyperlink", AddAuctionStatsToTooltip)
+
+-- Больше ничего хукать не нужно: в 11.1.5 окна аукциона тоже используют SetHyperlink
+--------------------------------------------------------------------------------
+-- ▲  КОНЕЦ БЛОКА  -------------------------------------------------------------
+
+
+-- конец файла

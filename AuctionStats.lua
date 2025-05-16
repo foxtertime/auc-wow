@@ -518,7 +518,7 @@ function AuctionStats:CreateDetailWindow()
     self.detailFrame = f
 end
 
--- 8) Рисуем Detail + History + Stats
+-- 8) Рисуем Detail + History + Stats (с очисткой обработчиков)
 function AuctionStats:DrawDetail()
     if not self.detailFrame then return end
     local list   = self.detailData or {}
@@ -533,7 +533,12 @@ function AuctionStats:DrawDetail()
     -- DETAIL ROWS
     local ct = self.detailContent
     ct:SetSize(W-60, #filtered * ROW_H)
-    for _,ln in ipairs(self.detailLines) do ln:Hide() end
+    for idx,ln in ipairs(self.detailLines) do
+        ln:Hide()
+        ln:SetScript("OnEnter", nil)
+        ln:SetScript("OnLeave", nil)
+        ln:SetScript("OnMouseUp", nil)
+    end
 
     for i,a in ipairs(filtered) do
         local ln = self.detailLines[i]
@@ -561,13 +566,6 @@ function AuctionStats:DrawDetail()
             ln.bo:SetPoint("LEFT",  D_POS_BUY,  0)
             ln.bd:SetPoint("LEFT",  D_POS_BID,  0)
 
-            ln:SetScript("OnEnter", function(self)
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                GameTooltip:SetHyperlink(a.link)
-                GameTooltip:Show()
-            end)
-            ln:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
             self.detailLines[i] = ln
         end
 
@@ -585,6 +583,15 @@ function AuctionStats:DrawDetail()
         ln.bo:SetText(a.buyout)
         ln.bd:SetText(a.bid)
         ln:Show()
+
+        -- Всегда заново назначаем обработчики!
+        ln:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetHyperlink(a.link)
+            GameTooltip:Show()
+        end)
+        ln:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        ln:SetScript("OnMouseUp", nil)
     end
 
     -- HISTORY ROWS
@@ -593,7 +600,12 @@ function AuctionStats:DrawDetail()
     local hist  = (id and AuctionStatsDB.history[id]) or {}
     local hct   = self.historyContent
     hct:SetSize(W-60, #hist * ROW_H)
-    for _,ln in ipairs(self.historyLines) do ln:Hide() end
+    for idx,ln in ipairs(self.historyLines) do
+        ln:Hide()
+        ln:SetScript("OnEnter", nil)
+        ln:SetScript("OnLeave", nil)
+        ln:SetScript("OnMouseUp", nil)
+    end
 
     for i,e in ipairs(hist) do
         local ln = self.historyLines[i]
@@ -628,9 +640,10 @@ function AuctionStats:DrawDetail()
         ln.dur:SetText(hrs and (hrs.."h") or "?")
         ln.status:SetText(e.status or "")
         ln:Show()
+        -- Обычно тултипы для истории не нужны; если нужны, назначь тут обработчики.
     end
 
-    -- STATS для Detail (без изменений)
+    -- STATS для Detail
     local cnt, cost = 0, 0
     for _,a in ipairs(filtered) do
         cnt  = cnt + a.quantity
@@ -818,10 +831,7 @@ button:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 --------------------------------------------------------------------------------
 -- ▼▼▼  БЛОК ТУЛТИПОВ: «Выставлено …» (свитки + продукт)  ▼▼▼ ------------------
---  Ставьте ЭТОТ блок В САМЫЙ КОНЕЦ AuctionStats.lua, заменив старый.          --
---------------------------------------------------------------------------------
 
------------------------------ 1. Список префиксов рецептов ---------------------
 local RECIPE_PREFIXES = {
     -- enUS
     recipe   = true, formula  = true, pattern = true, plans  = true,
@@ -831,7 +841,6 @@ local RECIPE_PREFIXES = {
     ["чертёж"] = true, ["чертеж"]  = true, ["план"]   = true,
     ["планы"]  = true, ["инструкция"] = true, ["выкройка"] = true,
     ["эскиз"] = true,
-    -- другие языки добавляйте при необходимости
 }
 
 local function IsScrollByName(itemName)
@@ -841,7 +850,6 @@ local function IsScrollByName(itemName)
     return RECIPE_PREFIXES[prefix] or false
 end
 
------------------------------ 2. Считаем количество лотов ----------------------
 function AuctionStats:GetOwnedCountByItemID(id)
     local n = 0
     for _, lot in ipairs(self.dbAuctions or {}) do
@@ -873,7 +881,6 @@ function AuctionStats:GetScrollCountForProduct(productName)
     return n
 end
 
------------------------------ 3. Добавляем строки в тултип ---------------------
 function AddAuctionStatsToTooltip(tt)
     local _, link = tt:GetItem(); if not link then return end
     local itemID  = tonumber(link:match("item:(%d+)")); if not itemID then return end
@@ -883,9 +890,6 @@ function AddAuctionStatsToTooltip(tt)
     local productCount, scrollCount, dualShown = 0, 0, false
 
     if IsScrollByName(itemName) then
-        --------------------------------------------------------------------
-        -- Это действительно свиток-рецепт
-        --------------------------------------------------------------------
         local productName = itemName:match("^.-:%s*(.+)$") or itemName
         scrollCount  = AuctionStats:GetOwnedCountByItemID(itemID)
         productCount = AuctionStats:GetOwnedCountByExactName(productName)
@@ -899,9 +903,6 @@ function AddAuctionStatsToTooltip(tt)
             dualShown = true
         end
     else
-        --------------------------------------------------------------------
-        -- Обычный предмет
-        --------------------------------------------------------------------
         productCount = AuctionStats:GetOwnedCountByItemID(itemID)
         scrollCount  = AuctionStats:GetScrollCountForProduct(itemName)
 
@@ -914,38 +915,31 @@ function AddAuctionStatsToTooltip(tt)
             dualShown = true
         end
     end
-
-    -- Убираем tt:Show() для избежания конфликтов
-    -- if dualShown then tt:Show() end
+    -- tt:Show() -- не делаем, чтобы не ломать цепочку других аддонов
 end
 
------------------------------ 4. Безопасный hooksecurefunc ----------------------
 local function SafeHook(tip, method)
     if type(tip[method]) == "function" then
         hooksecurefunc(tip, method, AddAuctionStatsToTooltip)
     end
 end
 
------------------------------ 5. Хуки, доступные сразу -------------------------
-SafeHook(GameTooltip,      "SetBagItem")         -- сумки
-SafeHook(GameTooltip,      "SetInventoryItem")   -- экип/банк
-SafeHook(GameTooltip,      "SetHyperlink")       -- чат-ссылки
-SafeHook(ShoppingTooltip1, "SetHyperlink")       -- список аукциона
+SafeHook(GameTooltip,      "SetBagItem")
+SafeHook(GameTooltip,      "SetInventoryItem")
+SafeHook(GameTooltip,      "SetHyperlink")
+SafeHook(ShoppingTooltip1, "SetHyperlink")
 SafeHook(ShoppingTooltip2, "SetHyperlink")
-
--- Профессии
 SafeHook(GameTooltip, "SetRecipeReagentItem")
 SafeHook(GameTooltip, "SetRecipeResultItem")
 SafeHook(GameTooltip, "SetCraftedItemByID")
 SafeHook(GameTooltip, "SetTradeSkillItem")
 
------------------------------ 6. Хуки для Blizzard_AuctionHouseUI -------------
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
 f:SetScript("OnEvent", function(self, _, addon)
     if addon == "Blizzard_AuctionHouseUI" then
-        SafeHook(GameTooltip, "SetAuctionItem")      -- browse / owner / bidder
-        SafeHook(GameTooltip, "SetAuctionSellItem")  -- слот продажи
+        SafeHook(GameTooltip, "SetAuctionItem")
+        SafeHook(GameTooltip, "SetAuctionSellItem")
         self:UnregisterEvent("ADDON_LOADED")
     end
 end)
